@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Платформер</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1c2c;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #f4f4f4;
+  }
+  h1 { margin: 16px 0 8px; font-size: 22px; letter-spacing: 2px; }
+  canvas {
+    background: linear-gradient(#4a91db, #8fc4ec);
+    border: 4px solid #333c57;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    max-width: 100%;
+  }
+  .hint { margin-top: 10px; font-size: 14px; color: #94a1c3; }
+</style>
+</head>
+<body>
+<h1>🍄 ПЛАТФОРМЕР</h1>
+<canvas id="game" width="900" height="500"></canvas>
+<p class="hint">← → или A/D — движение &nbsp;|&nbsp; Пробел / ↑ / W — прыжок &nbsp;|&nbsp; R — заново</p>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+const TILE = 40;
+const GRAVITY = 0.55;
+const MOVE_SPEED = 4.2;
+const JUMP_POWER = 12.5;
+
+// Карта уровня: # — земля, = — платформа, o — монета, ! — враг, F — флаг (финиш), P — старт игрока
+const LEVEL = [
+  "                                                            ",
+  "                                                            ",
+  "          o                                        o        ",
+  "         ===        o o o                         ===       ",
+  "                    =====          o o                      ",
+  "   P           o              ==  =====   o   o          F  ",
+  "  ===         ===                        === ===        === ",
+  "                        o                                   ",
+  "        !     ====     ===     !                 !          ",
+  "#####################   ############   #####################",
+  "#####################   ############   #####################",
+];
+
+const ROWS = LEVEL.length;
+const COLS = LEVEL[0].length;
+const WORLD_W = COLS * TILE;
+const WORLD_H = ROWS * TILE;
+
+// ---- Состояние игры ----
+let solids, coins, enemies, flag, player, camX;
+let coinsTotal, score, state; // state: "play" | "win" | "dead"
+let time0, timeEnd;
+
+function buildLevel() {
+  solids = [];
+  coins = [];
+  enemies = [];
+  flag = null;
+  score = 0;
+  camX = 0;
+  state = "play";
+  time0 = performance.now();
+  timeEnd = null;
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const ch = LEVEL[r][c];
+      const x = c * TILE, y = r * TILE;
+      if (ch === "#" || ch === "=") {
+        solids.push({ x, y, w: TILE, h: TILE, top: ch === "=" || LEVEL[r - 1]?.[c] !== "#" });
+      } else if (ch === "o") {
+        coins.push({ x: x + TILE / 2, y: y + TILE / 2, taken: false });
+      } else if (ch === "!") {
+        enemies.push({ x, y: y + 8, w: TILE - 4, h: TILE - 8, dir: 1, speed: 1.3, x0: x, range: 3 * TILE, dead: false });
+      } else if (ch === "F") {
+        flag = { x: x + TILE / 2, y: y - TILE, w: 8, h: 2 * TILE };
+      } else if (ch === "P") {
+        player = { x, y, w: 26, h: 34, vx: 0, vy: 0, onGround: false, face: 1 };
+      }
+    }
+  }
+  coinsTotal = coins.length;
+}
+
+// ---- Управление ----
+const keys = {};
+addEventListener("keydown", e => {
+  keys[e.code] = true;
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+  if (e.code === "KeyR") buildLevel();
+});
+addEventListener("keyup", e => keys[e.code] = false);
+
+const left  = () => keys["ArrowLeft"] || keys["KeyA"];
+const right = () => keys["ArrowRight"] || keys["KeyD"];
+const jump  = () => keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
+
+// ---- Физика ----
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function updatePlayer() {
+  // горизонталь
+  player.vx = 0;
+  if (left())  { player.vx = -MOVE_SPEED; player.face = -1; }
+  if (right()) { player.vx =  MOVE_SPEED; player.face =  1; }
+
+  // прыжок
+  if (jump() && player.onGround) {
+    player.vy = -JUMP_POWER;
+    player.onGround = false;
+  }
+
+  // гравитация
+  player.vy += GRAVITY;
+  if (player.vy > 15) player.vy = 15;
+
+  // перемещение по X со столкновениями
+  player.x += player.vx;
+  for (const s of solids) {
+    if (rectsOverlap(player, s)) {
+      if (player.vx > 0) player.x = s.x - player.w;
+      else if (player.vx < 0) player.x = s.x + s.w;
+    }
+  }
+  player.x = Math.max(0, Math.min(WORLD_W - player.w, player.x));
+
+  // перемещение по Y со столкновениями
+  player.y += player.vy;
+  player.onGround = false;
+  for (const s of solids) {
+    if (rectsOverlap(player, s)) {
+      if (player.vy > 0) { player.y = s.y - player.h; player.vy = 0; player.onGround = true; }
+      else if (player.vy < 0) { player.y = s.y + s.h; player.vy = 0; }
+    }
+  }
+
+  // падение в пропасть
+  if (player.y > WORLD_H + 100) state = "dead";
+
+  // монеты
+  for (const coin of coins) {
+    if (!coin.taken &&
+        Math.abs(player.x + player.w / 2 - coin.x) < 24 &&
+        Math.abs(player.y + player.h / 2 - coin.y) < 24) {
+      coin.taken = true;
+      score++;
+    }
+  }
+
+  // финиш
+  if (flag && rectsOverlap(player, { x: flag.x - 10, y: flag.y, w: 28, h: flag.h })) {
+    state = "win";
+  }
+}
+
+function updateEnemies() {
+  for (const en of enemies) {
+    if (en.dead) continue;
+    en.x += en.dir * en.speed;
+    if (en.x < en.x0 - en.range || en.x > en.x0 + en.range) en.dir *= -1;
+
+    if (rectsOverlap(player, en)) {
+      // прыжок на голову убивает врага
+      if (player.vy > 0 && player.y + player.h - en.y < 18) {
+        en.dead = true;
+        player.vy = -8;
+      } else {
+        state = "dead";
+      }
+    }
+  }
+}
+
+// ---- Отрисовка ----
+function drawBackground() {
+  // облака (параллакс)
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  for (let i = 0; i < 8; i++) {
+    const cx = ((i * 340 - camX * 0.4) % (WORLD_W + 200) + WORLD_W + 200) % (WORLD_W + 200) - 100;
+    const cy = 40 + (i % 3) * 55;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 46, 16, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + 30, cy + 6, 34, 13, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // холмы
+  ctx.fillStyle = "rgba(60,130,80,0.45)";
+  for (let i = 0; i < 12; i++) {
+    const hx = ((i * 260 - camX * 0.7) % (WORLD_W + 300) + WORLD_W + 300) % (WORLD_W + 300) - 150;
+    ctx.beginPath();
+    ctx.arc(hx, H, 110 + (i % 3) * 40, Math.PI, 0);
+    ctx.fill();
+  }
+}
+
+function drawTile(s) {
+  const x = s.x - camX;
+  if (x + TILE < 0 || x > W) return;
+  ctx.fillStyle = "#8a5a2b";
+  ctx.fillRect(x, s.y, TILE, TILE);
+  if (s.top) {
+    ctx.fillStyle = "#4caf50";
+    ctx.fillRect(x, s.y, TILE, 10);
+  }
+  ctx.strokeStyle = "rgba(0,0,0,0.15)";
+  ctx.strokeRect(x + 0.5, s.y + 0.5, TILE - 1, TILE - 1);
+}
+
+function drawCoin(coin) {
+  if (coin.taken) return;
+  const x = coin.x - camX;
+  if (x < -20 || x > W + 20) return;
+  const bounce = Math.sin(performance.now() / 250 + coin.x) * 3;
+  ctx.fillStyle = "#ffd93b";
+  ctx.beginPath();
+  ctx.arc(x, coin.y + bounce, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#b8860b";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawEnemy(en) {
+  if (en.dead) return;
+  const x = en.x - camX;
+  if (x + en.w < 0 || x > W) return;
+  ctx.fillStyle = "#c0392b";
+  ctx.beginPath();
+  ctx.roundRect(x, en.y, en.w, en.h, 8);
+  ctx.fill();
+  // глаза
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(x + 10, en.y + 12, 5, 0, Math.PI * 2);
+  ctx.arc(x + en.w - 10, en.y + 12, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(x + 10 + en.dir * 2, en.y + 12, 2.5, 0, Math.PI * 2);
+  ctx.arc(x + en.w - 10 + en.dir * 2, en.y + 12, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawFlag() {
+  const x = flag.x - camX;
+  ctx.fillStyle = "#666";
+  ctx.fillRect(x, flag.y, 6, flag.h);
+  ctx.fillStyle = "#2ecc71";
+  ctx.beginPath();
+  ctx.moveTo(x + 6, flag.y + 4);
+  ctx.lineTo(x + 40, flag.y + 16);
+  ctx.lineTo(x + 6, flag.y + 28);
+  ctx.fill();
+}
+
+function drawPlayer() {
+  const x = player.x - camX;
+  // тело
+  ctx.fillStyle = "#3867d6";
+  ctx.beginPath();
+  ctx.roundRect(x, player.y + 10, player.w, player.h - 10, 6);
+  ctx.fill();
+  // голова
+  ctx.fillStyle = "#ffce9e";
+  ctx.beginPath();
+  ctx.arc(x + player.w / 2, player.y + 9, 10, 0, Math.PI * 2);
+  ctx.fill();
+  // глаза
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(x + player.w / 2 + player.face * 4, player.y + 8, 2, 0, Math.PI * 2);
+  ctx.fill();
+  // кепка
+  ctx.fillStyle = "#e74c3c";
+  ctx.beginPath();
+  ctx.arc(x + player.w / 2, player.y + 6, 10, Math.PI, 0);
+  ctx.fill();
+  ctx.fillRect(x + player.w / 2, player.y + 4, 14 * player.face, 3);
+}
+
+function drawHUD() {
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.beginPath();
+  ctx.roundRect(12, 12, 210, 34, 8);
+  ctx.fill();
+  ctx.fillStyle = "#ffd93b";
+  ctx.font = "bold 18px 'Segoe UI', Arial";
+  const t = (((timeEnd ?? performance.now()) - time0) / 1000).toFixed(1);
+  ctx.fillText(`🪙 ${score}/${coinsTotal}   ⏱ ${t}с`, 24, 36);
+}
+
+function drawOverlay(title, subtitle, color) {
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = "center";
+  ctx.fillStyle = color;
+  ctx.font = "bold 52px 'Segoe UI', Arial";
+  ctx.fillText(title, W / 2, H / 2 - 20);
+  ctx.fillStyle = "#fff";
+  ctx.font = "22px 'Segoe UI', Arial";
+  ctx.fillText(subtitle, W / 2, H / 2 + 28);
+  ctx.textAlign = "left";
+}
+
+// ---- Главный цикл ----
+function loop() {
+  if (state === "play") {
+    updatePlayer();
+    updateEnemies();
+    // камера следует за игроком
+    camX = Math.max(0, Math.min(WORLD_W - W, player.x + player.w / 2 - W / 2));
+    if (state !== "play") timeEnd = performance.now();
+  }
+
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+  for (const s of solids) drawTile(s);
+  for (const coin of coins) drawCoin(coin);
+  for (const en of enemies) drawEnemy(en);
+  drawFlag();
+  drawPlayer();
+  drawHUD();
+
+  if (state === "win") {
+    const t = (((timeEnd ?? performance.now()) - time0) / 1000).toFixed(1);
+    drawOverlay("ПОБЕДА! 🎉", `Монеты: ${score}/${coinsTotal} • Время: ${t}с • R — заново`, "#2ecc71");
+  } else if (state === "dead") {
+    drawOverlay("ИГРА ОКОНЧЕНА", "Нажми R, чтобы попробовать ещё раз", "#e74c3c");
+  }
+
+  requestAnimationFrame(loop);
+}
+
+buildLevel();
+loop();
+</script>
+</body>
+</html>
