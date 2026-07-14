@@ -111,6 +111,46 @@ const WORLD_H = ROWS * TILE;
 let solids, coins, enemies, flag, player, camX;
 let coinsTotal, score, state; // state: "play" | "win" | "dead"
 let time0, timeEnd;
+let particles, overlayAlpha;
+
+// ---- Частицы ----
+function spawnParticles(x, y, colors, n, power = 3) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = (0.5 + Math.random()) * power;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * v,
+      vy: Math.sin(a) * v - 1.5,
+      life: 1,
+      decay: 0.02 + Math.random() * 0.03,
+      size: 2 + Math.random() * 3,
+      color: colors[(Math.random() * colors.length) | 0],
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x - camX, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
 
 function buildLevel() {
   solids = [];
@@ -122,6 +162,8 @@ function buildLevel() {
   state = "play";
   time0 = performance.now();
   timeEnd = null;
+  particles = [];
+  overlayAlpha = 0;
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -136,7 +178,7 @@ function buildLevel() {
       } else if (ch === "F") {
         flag = { x: x + TILE / 2, y: y - TILE, w: 8, h: 2 * TILE };
       } else if (ch === "P") {
-        player = { x, y, w: 26, h: 34, vx: 0, vy: 0, onGround: false, face: 1 };
+        player = { x, y, w: 26, h: 34, vx: 0, vy: 0, onGround: false, face: 1, squash: 0, runPhase: 0 };
       }
     }
   }
@@ -195,6 +237,7 @@ function updatePlayer() {
   if (jump() && player.onGround) {
     player.vy = -JUMP_POWER;
     player.onGround = false;
+    spawnParticles(player.x + player.w / 2, player.y + player.h, ["#d9c9a3", "#bfae86"], 6, 2);
   }
 
   // гравитация
@@ -212,6 +255,7 @@ function updatePlayer() {
   player.x = Math.max(0, Math.min(WORLD_W - player.w, player.x));
 
   // перемещение по Y со столкновениями
+  const wasFalling = player.vy > 4;
   player.y += player.vy;
   player.onGround = false;
   for (const s of solids) {
@@ -220,6 +264,14 @@ function updatePlayer() {
       else if (player.vy < 0) { player.y = s.y + s.h; player.vy = 0; }
     }
   }
+  // приседание и пыль при приземлении
+  if (player.onGround && wasFalling) {
+    player.squash = 1;
+    spawnParticles(player.x + player.w / 2, player.y + player.h, ["#d9c9a3", "#bfae86"], 8, 2.5);
+  }
+  if (player.squash > 0) player.squash = Math.max(0, player.squash - 0.08);
+  // фаза бега для анимации ног
+  if (player.onGround && player.vx !== 0) player.runPhase += 0.28;
 
   // падение в пропасть
   if (player.y > WORLD_H + 100) state = "dead";
@@ -231,6 +283,7 @@ function updatePlayer() {
         Math.abs(player.y + player.h / 2 - coin.y) < 24) {
       coin.taken = true;
       score++;
+      spawnParticles(coin.x, coin.y, ["#ffd93b", "#fff3b0", "#ffb703"], 12, 3);
     }
   }
 
@@ -251,6 +304,7 @@ function updateEnemies() {
       if (player.vy > 0 && player.y + player.h - en.y < 18) {
         en.dead = true;
         player.vy = -8;
+        spawnParticles(en.x + en.w / 2, en.y + en.h / 2, ["#c0392b", "#e74c3c", "#f1948a"], 16, 4);
       } else {
         state = "dead";
       }
@@ -260,10 +314,48 @@ function updateEnemies() {
 
 // ---- Отрисовка ----
 function drawBackground() {
+  // солнце с сиянием
+  const sunX = 120 - camX * 0.1, sunY = 80;
+  const glow = ctx.createRadialGradient(sunX, sunY, 10, sunX, sunY, 90);
+  glow.addColorStop(0, "rgba(255,240,160,0.9)");
+  glow.addColorStop(0.4, "rgba(255,220,120,0.35)");
+  glow.addColorStop(1, "rgba(255,220,120,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(sunX - 90, sunY - 90, 180, 180);
+  ctx.fillStyle = "#ffe58a";
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
+  ctx.fill();
+
+  // дальние горы (медленный параллакс)
+  for (let i = 0; i < 10; i++) {
+    const mx = ((i * 420 - camX * 0.3) % (WORLD_W + 400) + WORLD_W + 400) % (WORLD_W + 400) - 200;
+    const mh = 260 + (i % 3) * 60;
+    const peakY = H - mh;
+    ctx.fillStyle = "rgba(90,110,160,0.35)";
+    ctx.beginPath();
+    ctx.moveTo(mx - 190, H);
+    ctx.lineTo(mx, peakY);
+    ctx.lineTo(mx + 190, H);
+    ctx.fill();
+    // снежная шапка — прилегает к вершине
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.beginPath();
+    ctx.moveTo(mx, peakY);
+    ctx.lineTo(mx - 34, peakY + 48);
+    ctx.lineTo(mx - 14, peakY + 38);
+    ctx.lineTo(mx, peakY + 52);
+    ctx.lineTo(mx + 14, peakY + 38);
+    ctx.lineTo(mx + 34, peakY + 48);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   // облака (параллакс)
   ctx.fillStyle = "rgba(255,255,255,0.85)";
+  const drift = performance.now() / 120;
   for (let i = 0; i < 8; i++) {
-    const cx = ((i * 340 - camX * 0.4) % (WORLD_W + 200) + WORLD_W + 200) % (WORLD_W + 200) - 100;
+    const cx = ((i * 340 - camX * 0.4 + drift) % (WORLD_W + 200) + WORLD_W + 200) % (WORLD_W + 200) - 100;
     const cy = 40 + (i % 3) * 55;
     ctx.beginPath();
     ctx.ellipse(cx, cy, 46, 16, 0, 0, Math.PI * 2);
@@ -280,14 +372,51 @@ function drawBackground() {
   }
 }
 
+// детерминированный «случайный» узор для декораций тайла
+function tileHash(s) {
+  return ((s.x * 73856093) ^ (s.y * 19349663)) >>> 0;
+}
+
 function drawTile(s) {
   const x = s.x - camX;
   if (x + TILE < 0 || x > W) return;
   ctx.fillStyle = "#8a5a2b";
   ctx.fillRect(x, s.y, TILE, TILE);
+  // камешки в земле
+  const h = tileHash(s);
+  ctx.fillStyle = "rgba(0,0,0,0.12)";
+  ctx.beginPath();
+  ctx.arc(x + 8 + (h % 20), s.y + 22 + (h % 12), 3, 0, Math.PI * 2);
+  ctx.fill();
   if (s.top) {
     ctx.fillStyle = "#4caf50";
     ctx.fillRect(x, s.y, TILE, 10);
+    ctx.fillStyle = "#66bb6a";
+    ctx.fillRect(x, s.y, TILE, 4);
+    // мягкие пучки травы
+    ctx.fillStyle = "#66bb6a";
+    for (let i = 0; i < 3; i++) {
+      const gx = x + 7 + i * 13 + (h >> i) % 5;
+      const sway = Math.sin(performance.now() / 600 + s.x + i * 2) * 1.2;
+      ctx.beginPath();
+      ctx.ellipse(gx + sway, s.y - 2, 3, 5, sway * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // цветок на некоторых тайлах
+    if (h % 5 === 0) {
+      const fx = x + 10 + (h % 22);
+      ctx.fillStyle = ["#ff8fa3", "#ffd166", "#c8b6ff"][h % 3];
+      for (let p = 0; p < 5; p++) {
+        const a = (p / 5) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(fx + Math.cos(a) * 3.5, s.y - 10 + Math.sin(a) * 3.5, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(fx, s.y - 10, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.strokeStyle = "rgba(0,0,0,0.15)";
   ctx.strokeRect(x + 0.5, s.y + 0.5, TILE - 1, TILE - 1);
@@ -297,24 +426,47 @@ function drawCoin(coin) {
   if (coin.taken) return;
   const x = coin.x - camX;
   if (x < -20 || x > W + 20) return;
-  const bounce = Math.sin(performance.now() / 250 + coin.x) * 3;
+  const t = performance.now();
+  const bounce = Math.sin(t / 250 + coin.x) * 3;
+  const y = coin.y + bounce;
+  // «вращение» — сжатие по горизонтали
+  const spin = Math.abs(Math.cos(t / 300 + coin.x));
   ctx.fillStyle = "#ffd93b";
   ctx.beginPath();
-  ctx.arc(x, coin.y + bounce, 9, 0, Math.PI * 2);
+  ctx.ellipse(x, y, 9 * Math.max(0.25, spin), 9, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = "#b8860b";
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.lineWidth = 1;
+  // блик
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.beginPath();
+  ctx.arc(x - 3 * spin, y - 3, 2, 0, Math.PI * 2);
+  ctx.fill();
+  // редкие искорки вокруг монеты
+  if ((t / 100 + coin.x) % 30 < 1) {
+    spawnParticles(coin.x, y, ["#fff3b0"], 1, 0.6);
+  }
 }
 
 function drawEnemy(en) {
   if (en.dead) return;
   const x = en.x - camX;
   if (x + en.w < 0 || x > W) return;
+  const t = performance.now();
+  // «дыхание» — тело пружинит при ходьбе
+  const wob = Math.sin(t / 120 + en.x0) * 2;
+  // ножки
+  ctx.fillStyle = "#7b241c";
+  const step = Math.sin(t / 90 + en.x0) * 4;
+  ctx.beginPath();
+  ctx.ellipse(x + 10 + step, en.y + en.h - 1, 6, 4, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + en.w - 10 - step, en.y + en.h - 1, 6, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
   ctx.fillStyle = "#c0392b";
   ctx.beginPath();
-  ctx.roundRect(x, en.y, en.w, en.h, 8);
+  ctx.roundRect(x, en.y + wob / 2, en.w, en.h - wob, 8);
   ctx.fill();
   // глаза
   ctx.fillStyle = "#fff";
@@ -342,28 +494,68 @@ function drawFlag() {
 }
 
 function drawPlayer() {
-  const x = player.x - camX;
+  const cx = player.x - camX + player.w / 2;
+  const bottom = player.y + player.h;
+
+  // сжатие при приземлении / вытягивание в полёте
+  let sx = 1, sy = 1;
+  if (player.squash > 0) {
+    sx = 1 + 0.25 * player.squash;
+    sy = 1 - 0.2 * player.squash;
+  } else if (!player.onGround) {
+    const stretch = Math.min(0.15, Math.abs(player.vy) / 60);
+    sx = 1 - stretch;
+    sy = 1 + stretch;
+  }
+  // лёгкий наклон в сторону движения
+  const tilt = player.vx * 0.02;
+
+  ctx.save();
+  ctx.translate(cx, bottom);
+  ctx.rotate(tilt);
+  ctx.scale(sx, sy);
+  ctx.translate(-player.w / 2, -player.h);
+  // ноги (шагают при беге, поджаты в прыжке)
+  ctx.strokeStyle = "#27408b";
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  let legL = 0, legR = 0;
+  if (player.onGround && player.vx !== 0) {
+    legL = Math.sin(player.runPhase) * 6;
+    legR = -legL;
+  } else if (!player.onGround) {
+    legL = -4; legR = 4;
+  }
+  ctx.beginPath();
+  ctx.moveTo(player.w / 2 - 5, player.h - 10);
+  ctx.lineTo(player.w / 2 - 5 + legL, player.h - 1);
+  ctx.moveTo(player.w / 2 + 5, player.h - 10);
+  ctx.lineTo(player.w / 2 + 5 + legR, player.h - 1);
+  ctx.stroke();
+  ctx.lineWidth = 1;
   // тело
   ctx.fillStyle = "#3867d6";
   ctx.beginPath();
-  ctx.roundRect(x, player.y + 10, player.w, player.h - 10, 6);
+  ctx.roundRect(0, 10, player.w, player.h - 16, 6);
   ctx.fill();
-  // голова
+  // голова с лёгким покачиванием при беге
+  const bob = player.onGround && player.vx !== 0 ? Math.sin(player.runPhase * 2) * 1.2 : 0;
   ctx.fillStyle = "#ffce9e";
   ctx.beginPath();
-  ctx.arc(x + player.w / 2, player.y + 9, 10, 0, Math.PI * 2);
+  ctx.arc(player.w / 2, 9 + bob, 10, 0, Math.PI * 2);
   ctx.fill();
   // глаза
   ctx.fillStyle = "#222";
   ctx.beginPath();
-  ctx.arc(x + player.w / 2 + player.face * 4, player.y + 8, 2, 0, Math.PI * 2);
+  ctx.arc(player.w / 2 + player.face * 4, 8 + bob, 2, 0, Math.PI * 2);
   ctx.fill();
   // кепка
   ctx.fillStyle = "#e74c3c";
   ctx.beginPath();
-  ctx.arc(x + player.w / 2, player.y + 6, 10, Math.PI, 0);
+  ctx.arc(player.w / 2, 6 + bob, 10, Math.PI, 0);
   ctx.fill();
-  ctx.fillRect(x + player.w / 2, player.y + 4, 14 * player.face, 3);
+  ctx.fillRect(player.w / 2, 4 + bob, 14 * player.face, 3);
+  ctx.restore();
 }
 
 function drawHUD() {
@@ -378,16 +570,22 @@ function drawHUD() {
 }
 
 function drawOverlay(title, subtitle, color) {
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  // плавное затемнение и выезд текста
+  overlayAlpha = Math.min(1, overlayAlpha + 0.04);
+  const k = overlayAlpha;
+  ctx.fillStyle = `rgba(0,0,0,${0.55 * k})`;
   ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = k;
+  const rise = (1 - k) * 30;
   ctx.textAlign = "center";
   ctx.fillStyle = color;
   ctx.font = "bold 52px 'Segoe UI', Arial";
-  ctx.fillText(title, W / 2, H / 2 - 20);
+  ctx.fillText(title, W / 2, H / 2 - 20 + rise);
   ctx.fillStyle = "#fff";
   ctx.font = "22px 'Segoe UI', Arial";
-  ctx.fillText(subtitle, W / 2, H / 2 + 28);
+  ctx.fillText(subtitle, W / 2, H / 2 + 28 + rise);
   ctx.textAlign = "left";
+  ctx.globalAlpha = 1;
 }
 
 // ---- Главный цикл ----
@@ -395,10 +593,12 @@ function loop() {
   if (state === "play") {
     updatePlayer();
     updateEnemies();
-    // камера следует за игроком
-    camX = Math.max(0, Math.min(WORLD_W - W, player.x + player.w / 2 - W / 2));
+    // камера плавно следует за игроком
+    const camTarget = Math.max(0, Math.min(WORLD_W - W, player.x + player.w / 2 - W / 2));
+    camX += (camTarget - camX) * 0.12;
     if (state !== "play") timeEnd = performance.now();
   }
+  updateParticles();
 
   ctx.clearRect(0, 0, W, H);
   drawBackground();
@@ -407,6 +607,7 @@ function loop() {
   for (const en of enemies) drawEnemy(en);
   drawFlag();
   drawPlayer();
+  drawParticles();
   drawHUD();
 
   if (state === "win") {
