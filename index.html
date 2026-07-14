@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Платформер</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -17,19 +17,62 @@
     color: #f4f4f4;
   }
   h1 { margin: 16px 0 8px; font-size: 22px; letter-spacing: 2px; }
+  .game-wrap { position: relative; max-width: 100%; }
   canvas {
+    display: block;
     background: linear-gradient(#4a91db, #8fc4ec);
     border: 4px solid #333c57;
     border-radius: 8px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     max-width: 100%;
+    height: auto;
+    touch-action: none;
   }
   .hint { margin-top: 10px; font-size: 14px; color: #94a1c3; }
+
+  /* Сенсорные кнопки — видны только на устройствах с тач-экраном */
+  .controls { display: none; }
+  body.touch .controls {
+    display: flex;
+    position: absolute;
+    left: 0; right: 0; bottom: 12px;
+    justify-content: space-between;
+    padding: 0 14px;
+    pointer-events: none;
+  }
+  body.touch .hint { display: none; }
+  .controls .group { display: flex; gap: 14px; }
+  .controls button {
+    pointer-events: auto;
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.5);
+    background: rgba(0,0,0,0.35);
+    color: #fff;
+    font-size: 26px;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .controls button:active { background: rgba(255,255,255,0.35); }
+  #btnJump { width: 76px; height: 76px; font-size: 30px; }
 </style>
 </head>
 <body>
 <h1>🍄 ПЛАТФОРМЕР</h1>
-<canvas id="game" width="900" height="500"></canvas>
+<div class="game-wrap">
+  <canvas id="game" width="900" height="500"></canvas>
+  <div class="controls">
+    <div class="group">
+      <button id="btnLeft" aria-label="Влево">◀</button>
+      <button id="btnRight" aria-label="Вправо">▶</button>
+    </div>
+    <div class="group">
+      <button id="btnJump" aria-label="Прыжок">⬆</button>
+    </div>
+  </div>
+</div>
 <p class="hint">← → или A/D — движение &nbsp;|&nbsp; Пробел / ↑ / W — прыжок &nbsp;|&nbsp; R — заново</p>
 
 <script>
@@ -109,9 +152,33 @@ addEventListener("keydown", e => {
 });
 addEventListener("keyup", e => keys[e.code] = false);
 
-const left  = () => keys["ArrowLeft"] || keys["KeyA"];
-const right = () => keys["ArrowRight"] || keys["KeyD"];
-const jump  = () => keys["Space"] || keys["ArrowUp"] || keys["KeyW"];
+// ---- Сенсорное управление ----
+const touch = { left: false, right: false, jump: false };
+const isTouchDevice = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+if (isTouchDevice) document.body.classList.add("touch");
+
+function bindButton(id, prop) {
+  const btn = document.getElementById(id);
+  const press = e => { e.preventDefault(); touch[prop] = true; };
+  const release = e => { e.preventDefault(); touch[prop] = false; };
+  btn.addEventListener("pointerdown", press);
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointercancel", release);
+  btn.addEventListener("pointerleave", release);
+  btn.addEventListener("contextmenu", e => e.preventDefault());
+}
+bindButton("btnLeft", "left");
+bindButton("btnRight", "right");
+bindButton("btnJump", "jump");
+
+// тап по экрану после победы/поражения — рестарт
+canvas.addEventListener("pointerdown", () => {
+  if (state !== "play") buildLevel();
+});
+
+const left  = () => keys["ArrowLeft"] || keys["KeyA"] || touch.left;
+const right = () => keys["ArrowRight"] || keys["KeyD"] || touch.right;
+const jump  = () => keys["Space"] || keys["ArrowUp"] || keys["KeyW"] || touch.jump;
 
 // ---- Физика ----
 function rectsOverlap(a, b) {
@@ -344,9 +411,11 @@ function loop() {
 
   if (state === "win") {
     const t = (((timeEnd ?? performance.now()) - time0) / 1000).toFixed(1);
-    drawOverlay("ПОБЕДА! 🎉", `Монеты: ${score}/${coinsTotal} • Время: ${t}с • R — заново`, "#2ecc71");
+    const again = isTouchDevice ? "коснись экрана — заново" : "R — заново";
+    drawOverlay("ПОБЕДА! 🎉", `Монеты: ${score}/${coinsTotal} • Время: ${t}с • ${again}`, "#2ecc71");
   } else if (state === "dead") {
-    drawOverlay("ИГРА ОКОНЧЕНА", "Нажми R, чтобы попробовать ещё раз", "#e74c3c");
+    const again = isTouchDevice ? "Коснись экрана, чтобы попробовать ещё раз" : "Нажми R, чтобы попробовать ещё раз";
+    drawOverlay("ИГРА ОКОНЧЕНА", again, "#e74c3c");
   }
 
   requestAnimationFrame(loop);
