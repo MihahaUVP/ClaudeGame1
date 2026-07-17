@@ -142,6 +142,9 @@ const THEMES = [
 
 let currentLevel = 0;
 let runElapsed = 0; // суммарное время пройденных уровней
+let runCoins = 0;   // монеты, собранные на пройденных уровнях
+// всего монет во всех уровнях
+const TOTAL_COINS = LEVELS.reduce((n, lvl) => n + lvl.join("").split("o").length - 1, 0);
 let LEVEL, ROWS, COLS, WORLD_W, WORLD_H;
 
 // ---- Состояние игры ----
@@ -241,12 +244,14 @@ function restartLevel() {
 }
 function nextLevel() {
   runElapsed += levelTime();
+  runCoins += score;
   currentLevel++;
   buildLevel();
 }
 function restartRun() {
   currentLevel = 0;
   runElapsed = 0;
+  runCoins = 0;
   buildLevel();
 }
 // Реакция на действие игрока на экране между уровнями / после игры
@@ -722,9 +727,11 @@ function loop() {
       `Монеты: ${score}/${coinsTotal} • Время: ${levelTime().toFixed(1)}с • ${go}`, "#2ecc71");
   } else if (state === "win") {
     const total = (runElapsed + levelTime()).toFixed(1);
+    const allCoins = runCoins + score;
     const again = isTouchDevice ? "коснись экрана — сначала" : "R — играть сначала";
+    const perfect = allCoins === TOTAL_COINS ? " — ВСЕ МОНЕТЫ! ✨" : "";
     drawOverlay("ВСЕ УРОВНИ ПРОЙДЕНЫ! 🎉",
-      `Общее время: ${total}с • ${again}`, "#ffd93b");
+      `🪙 Монеты: ${allCoins}/${TOTAL_COINS}${perfect} • ⏱ Время: ${total}с • ${again}`, "#ffd93b");
   } else if (state === "dead") {
     const again = isTouchDevice ? "Коснись экрана, чтобы повторить уровень" : "Нажми R, чтобы повторить уровень";
     drawOverlay("ИГРА ОКОНЧЕНА", again, "#e74c3c");
